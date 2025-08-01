@@ -1,0 +1,787 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Junk Yard - ASCII Top-Down Shooter</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; background: #111; color: #eee;
+    font-family: monospace, monospace;
+    user-select: none;
+    -webkit-user-select: none;
+    overflow: hidden;
+  }
+  #gameCanvas {
+    background: #000;
+    display: block;
+    margin: 0 auto;
+    touch-action: none;
+  }
+  #ui {
+    position: fixed;
+    bottom: 0;
+    width: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    left: 0; right: 0;
+    background: #222;
+    padding: 5px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .button {
+    background: #444;
+    border: 2px solid #666;
+    color: #eee;
+    font-size: 18px;
+    padding: 10px 15px;
+    margin: 0 8px;
+    border-radius: 8px;
+    user-select: none;
+  }
+  .button:active {
+    background: #666;
+  }
+  #dpad {
+    width: 120px;
+    height: 120px;
+    position: fixed;
+    bottom: 10px;
+    left: 10px;
+    background: #222;
+    border-radius: 50%;
+    touch-action: none;
+  }
+  #dpad circle {
+    fill: #333;
+    stroke: #666;
+    stroke-width: 2;
+  }
+  #fireButton {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 70px;
+    height: 70px;
+    background: #a33;
+    border-radius: 50%;
+    color: #eee;
+    font-weight: bold;
+    font-size: 24px;
+    line-height: 70px;
+    text-align: center;
+    user-select: none;
+  }
+  #menus {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.95);
+    display: none;
+    color: #eee;
+    font-size: 16px;
+    padding: 15px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  #menus h1 {
+    margin-top: 0;
+  }
+  #menus button {
+    margin: 10px 0;
+    font-size: 18px;
+    padding: 10px 12px;
+    width: 100%;
+    border-radius: 6px;
+    border: none;
+    background: #333;
+    color: #eee;
+    cursor: pointer;
+  }
+  #menus button:active {
+    background: #555;
+  }
+  #healthBar {
+    position: fixed;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 160px;
+    height: 24px;
+    background: #222;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid #444;
+  }
+  #healthFill {
+    height: 100%;
+    background: #4a4;
+    width: 100%;
+  }
+  #weaponHUD {
+    position: fixed;
+    top: 40px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #eee;
+    font-weight: bold;
+    font-size: 18px;
+    font-family: monospace;
+  }
+  #rustCounter {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    font-size: 20px;
+    font-weight: bold;
+    color: #cc0;
+    text-shadow: 0 0 5px #cc0;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+
+<canvas id="gameCanvas" width="480" height="640"></canvas>
+
+<div id="ui">
+  <!-- UI buttons can go here if needed -->
+</div>
+
+<div id="healthBar"><div id="healthFill"></div></div>
+<div id="weaponHUD"></div>
+<div id="rustCounter"></div>
+
+<!-- On-screen controls -->
+<div id="dpad" aria-label="Movement D-pad" role="application" tabindex="0" aria-live="polite">
+  <svg width="120" height="120" viewBox="0 0 120 120" >
+    <circle id="dpadUp" cx="60" cy="25" r="20" />
+    <circle id="dpadLeft" cx="25" cy="60" r="20" />
+    <circle id="dpadDown" cx="60" cy="95" r="20" />
+    <circle id="dpadRight" cx="95" cy="60" r="20" />
+  </svg>
+</div>
+<div id="fireButton" role="button" aria-pressed="false" tabindex="0">FIRE</div>
+
+<!-- Menus container -->
+<div id="menus" role="dialog" aria-modal="true">
+  <!-- Menu content will be injected here -->
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  // ASCII art style characters for player, bots, bullets, etc.
+  const ASCII = {
+    playerOuter: '⬤', // big circle
+    playerInner: '●', // smaller circle
+    botTypes: ['X', 'O', '#', '&', '%'],
+    bullet: '*',
+    empty: ' ',
+    wall: '▓',
+  };
+
+  // Game config constants
+  const CANVAS_WIDTH = 480;
+  const CANVAS_HEIGHT = 640;
+  const CELL_SIZE = 16;  // size of each ASCII char square
+  const COLS = Math.floor(CANVAS_WIDTH / CELL_SIZE);
+  const ROWS = Math.floor(CANVAS_HEIGHT / CELL_SIZE);
+
+  // Player config
+  const PLAYER_SPEED = 3; // pixels per frame
+  const PLAYER_RADIUS = 12;
+  const PLAYER_HEALTH_MAX = 100;
+
+  // Bot config
+  const BOT_COUNT = 5;
+
+  // Weapon definitions (10 guns)
+  const WEAPONS = [
+    {name: 'Pistol', damage: 10, fireRate: 300, bulletsPerShot: 1, spread: 0, reloadTime: 1500, ammo: 12, maxAmmo: 12},
+    {name: 'SMG', damage: 6, fireRate: 100, bulletsPerShot: 1, spread: 10, reloadTime: 2000, ammo: 30, maxAmmo: 30},
+    {name: 'Shotgun', damage: 8, fireRate: 700, bulletsPerShot: 5, spread: 40, reloadTime: 2500, ammo: 8, maxAmmo: 8},
+    {name: 'Rifle', damage: 15, fireRate: 400, bulletsPerShot: 1, spread: 5, reloadTime: 2000, ammo: 20, maxAmmo: 20},
+    {name: 'Sniper', damage: 40, fireRate: 1000, bulletsPerShot: 1, spread: 0, reloadTime: 3000, ammo: 5, maxAmmo: 5},
+    {name: 'Laser', damage: 5, fireRate: 50, bulletsPerShot: 1, spread: 0, reloadTime: 2000, ammo: 50, maxAmmo: 50},
+    {name: 'Grenade', damage: 60, fireRate: 1500, bulletsPerShot: 1, spread: 0, reloadTime: 3000, ammo: 3, maxAmmo: 3},
+    {name: 'Flamethrower', damage: 3, fireRate: 70, bulletsPerShot: 1, spread: 20, reloadTime: 2500, ammo: 40, maxAmmo: 40},
+    {name: 'Crossbow', damage: 25, fireRate: 900, bulletsPerShot: 1, spread: 2, reloadTime: 2500, ammo: 10, maxAmmo: 10},
+    {name: 'Minigun', damage: 4, fireRate: 30, bulletsPerShot: 1, spread: 15, reloadTime: 3000, ammo: 100, maxAmmo: 100},
+  ];
+
+  // Bot definitions
+  const BOT_TYPES = [
+    {name: 'Chaser', char: 'X', speed: 1.5, health: 30},
+    {name: 'Shooter', char: 'O', speed: 1.2, health: 40},
+    {name: 'Tank', char: '#', speed: 0.8, health: 70},
+    {name: 'Swift', char: '&', speed: 2.5, health: 20},
+    {name: 'Bomber', char: '%', speed: 1.0, health: 50},
+  ];
+
+  // Skin definitions
+  const SKINS = [
+    {name: 'Default', outer: '⬤', inner: '●', cost: 0},
+    {name: 'Red Glow', outer: '⬤', inner: '●', outerColor: '#ff4444', innerColor: '#aa0000', cost: 10},
+    {name: 'Green Pulse', outer: '⬤', inner: '●', outerColor: '#44ff44', innerColor: '#00aa00', cost: 20},
+    {name: 'Blue Ice', outer: '⬤', inner: '●', outerColor: '#4488ff', innerColor: '#0055aa', cost: 30},
+    {name: 'Golden Shine', outer: '⬤', inner: '●', outerColor: '#ffcc00', innerColor: '#aa8800', cost: 50},
+  ];
+
+  // Globals
+  let canvas, ctx;
+  let keys = {};
+  let touchState = {up: false, down: false, left: false, right: false, fire: false};
+  let player, bots, bullets;
+  let currentWeaponIndex = 0;
+  let lastFireTime = 0;
+  let rust = 0;
+  let health = PLAYER_HEALTH_MAX;
+  let gameState = 'menu'; // 'menu', 'playing', 'sandbox', 'shop', 'locker'
+  let selectedSkinIndex = 0;
+
+  // Save/load keys for localStorage
+  const STORAGE_KEYS = {
+    rust: 'junkyard_rust',
+    skinsOwned: 'junkyard_skins_owned',
+    selectedSkin: 'junkyard_selected_skin',
+  };
+
+  // Initialize game
+  function init() {
+    canvas = document.getElementById('gameCanvas');
+    ctx = canvas.getContext('2d');
+    ctx.font = `${CELL_SIZE}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+
+    // Create player
+    player = {
+      x: CANVAS_WIDTH / 2,
+      y: CANVAS_HEIGHT / 2,
+      radius: PLAYER_RADIUS,
+      speed: PLAYER_SPEED,
+      health: PLAYER_HEALTH_MAX,
+      skinIndex: 0,
+    };
+
+    // Create bots array
+    bots = [];
+
+    // Create bullets array
+    bullets = [];
+
+    // Load saved rust and skins
+    rust = parseInt(localStorage.getItem(STORAGE_KEYS.rust)) || 0;
+
+    let owned = localStorage.getItem(STORAGE_KEYS.skinsOwned);
+    if (owned) {
+      try {
+        let arr = JSON.parse(owned);
+        if (Array.isArray(arr)) {
+          for (let i = 0; i < SKINS.length; i++) {
+            SKINS[i].owned = arr.includes(i);
+          }
+        }
+      } catch {}
+    }
+    // Make sure default skin is owned
+    if (!SKINS[0].owned) SKINS[0].owned = true;
+
+    selectedSkinIndex = parseInt(localStorage.getItem(STORAGE_KEYS.selectedSkin)) || 0;
+    if (!SKINS[selectedSkinIndex].owned) selectedSkinIndex = 0;
+
+    player.skinIndex = selectedSkinIndex;
+
+    // Setup event listeners
+    window.addEventListener('keydown', e => {
+      keys[e.key.toLowerCase()] = true;
+      if (e.key === 'Escape') {
+        if (gameState === 'playing' || gameState === 'sandbox') openMenu();
+        else if (gameState === 'menu') closeMenus();
+      }
+    });
+    window.addEventListener('keyup', e => {
+      keys[e.key.toLowerCase()] = false;
+    });
+
+    // Touch controls setup
+    setupTouchControls();
+
+    // Start main menu
+    openMainMenu();
+
+    // Start game loop
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Setup touch controls (D-pad and fire button)
+  function setupTouchControls() {
+    const dpad = document.getElementById('dpad');
+    const fireButton = document.getElementById('fireButton');
+
+    const dpadMap = {
+      dpadUp: 'up',
+      dpadDown: 'down',
+      dpadLeft: 'left',
+      dpadRight: 'right',
+    };
+
+    function setTouchFlag(name, val) {
+      touchState[name] = val;
+    }
+
+    // D-pad touch events
+    for (const id in dpadMap) {
+      let dir = dpadMap[id];
+      let el = document.getElementById(id);
+
+      el.addEventListener('touchstart', e => {
+        e.preventDefault();
+        setTouchFlag(dir, true);
+      });
+      el.addEventListener('touchend', e => {
+        e.preventDefault();
+        setTouchFlag(dir, false);
+      });
+      el.addEventListener('touchcancel', e => {
+        e.preventDefault();
+        setTouchFlag(dir, false);
+      });
+    }
+
+    // Fire button touch
+    fireButton.addEventListener('touchstart', e => {
+      e.preventDefault();
+      touchState.fire = true;
+      fireButton.setAttribute('aria-pressed', 'true');
+    });
+    fireButton.addEventListener('touchend', e => {
+      e.preventDefault();
+      touchState.fire = false;
+      fireButton.setAttribute('aria-pressed', 'false');
+    });
+    fireButton.addEventListener('touchcancel', e => {
+      e.preventDefault();
+      touchState.fire = false;
+      fireButton.setAttribute('aria-pressed', 'false');
+    });
+  }
+
+  // Open main menu
+  function openMainMenu() {
+    gameState = 'menu';
+    showMenu(`
+      <h1>Junk Yard</h1>
+      <button id="startBtn">Start Game</button>
+      <button id="sandboxBtn">Sandbox Mode</button>
+      <button id="shopBtn">Shop</button>
+      <button id="lockerBtn">Locker</button>
+    `);
+    document.getElementById('startBtn').onclick = () => {
+      startGame(false);
+    };
+    document.getElementById('sandboxBtn').onclick = () => {
+      startGame(true);
+    };
+    document.getElementById('shopBtn').onclick = () => {
+      openShop();
+    };
+    document.getElementById('lockerBtn').onclick = () => {
+      openLocker();
+    };
+  }
+
+  // Show menu with HTML content
+  function showMenu(html) {
+    const menus = document.getElementById('menus');
+    menus.style.display = 'block';
+    menus.innerHTML = html;
+  }
+
+  // Close menus
+  function closeMenus() {
+    document.getElementById('menus').style.display = 'none';
+    if (gameState === 'menu') {
+      // nothing
+    } else {
+      gameState = 'playing';
+    }
+  }
+
+  // Start the game or sandbox
+  function startGame(isSandbox) {
+    closeMenus();
+    gameState = isSandbox ? 'sandbox' : 'playing';
+    health = PLAYER_HEALTH_MAX;
+    player.x = CANVAS_WIDTH / 2;
+    player.y = CANVAS_HEIGHT / 2;
+    player.health = PLAYER_HEALTH_MAX;
+    bots = [];
+    bullets = [];
+    // Spawn bots only if not sandbox (sandbox allows toggle)
+    if (!isSandbox) spawnBots(BOT_COUNT);
+  }
+
+  // Spawn a number of bots randomly
+  function spawnBots(count) {
+    bots = [];
+    for (let i = 0; i < count; i++) {
+      let botType = BOT_TYPES[i % BOT_TYPES.length];
+      bots.push({
+        x: Math.random() * (CANVAS_WIDTH - 40) + 20,
+        y: Math.random() * (CANVAS_HEIGHT - 40) + 20,
+        radius: 12,
+        speed: botType.speed,
+        health: botType.health,
+        maxHealth: botType.health,
+        type: botType,
+        char: botType.char,
+        fireCooldown: 0,
+      });
+    }
+  }
+
+  // Open Shop menu
+  function openShop() {
+    gameState = 'shop';
+    let html = `<h1>Shop</h1>`;
+    html += `<p>Rust currency: <strong>${rust}</strong></p>`;
+    html += `<p>Buy skins using rust:</p><ul>`;
+    SKINS.forEach((skin, i) => {
+      html += `<li>${skin.name} - Cost: ${skin.cost} Rust `;
+      if (skin.owned) {
+        html += `(Owned)`;
+      } else if (skin.cost <= rust) {
+        html += `<button data-index="${i}" class="buySkinBtn">Buy</button>`;
+      } else {
+        html += `(Not enough rust)`;
+      }
+      html += `</li>`;
+    });
+    html += `</ul>`;
+    html += `<button id="backFromShop">Back</button>`;
+    showMenu(html);
+
+    // Buy buttons
+    document.querySelectorAll('.buySkinBtn').forEach(btn => {
+      btn.onclick = () => {
+        let idx = parseInt(btn.getAttribute('data-index'));
+        buySkin(idx);
+      };
+    });
+    document.getElementById('backFromShop').onclick = () => {
+      openMainMenu();
+    };
+  }
+
+  // Buy a skin
+  function buySkin(index) {
+    let skin = SKINS[index];
+    if (!skin.owned && skin.cost <= rust) {
+      rust -= skin.cost;
+      skin.owned = true;
+      saveProgress();
+      openShop();
+    }
+  }
+
+  // Open Locker menu (select skins)
+  function openLocker() {
+    gameState = 'locker';
+    let html = `<h1>Locker</h1><p>Select your skin:</p><ul>`;
+    SKINS.forEach((skin, i) => {
+      html += `<li>`;
+      if (player.skinIndex === i) {
+        html += `<strong>${skin.name}</strong> (Equipped)`;
+      } else if (skin.owned) {
+        html += `${skin.name} <button data-index="${i}" class="equipSkinBtn">Equip</button>`;
+      } else {
+        html += `${skin.name} (Locked)`;
+      }
+      html += `</li>`;
+    });
+    html += `</ul><button id="backFromLocker">Back</button>`;
+    showMenu(html);
+
+    document.querySelectorAll('.equipSkinBtn').forEach(btn => {
+      btn.onclick = () => {
+        let idx = parseInt(btn.getAttribute('data-index'));
+        equipSkin(idx);
+      };
+    });
+    document.getElementById('backFromLocker').onclick = () => {
+      openMainMenu();
+    };
+  }
+
+  // Equip skin
+  function equipSkin(index) {
+    if (SKINS[index].owned) {
+      player.skinIndex = index;
+      selectedSkinIndex = index;
+      saveProgress();
+      openLocker();
+    }
+  }
+
+  // Save progress to localStorage
+  function saveProgress() {
+    localStorage.setItem(STORAGE_KEYS.rust, rust.toString());
+    let ownedIndices = SKINS.reduce((arr, skin, i) => {
+      if (skin.owned) arr.push(i);
+      return arr;
+    }, []);
+    localStorage.setItem(STORAGE_KEYS.skinsOwned, JSON.stringify(ownedIndices));
+    localStorage.setItem(STORAGE_KEYS.selectedSkin, selectedSkinIndex.toString());
+  }
+
+  // Game Loop
+  function gameLoop(timestamp) {
+    if (gameState === 'playing' || gameState === 'sandbox') {
+      update();
+      render();
+    }
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Update game logic
+  function update() {
+    handlePlayerMovement();
+    handleShooting();
+    updateBullets();
+    updateBots();
+    checkPlayerHealth();
+  }
+
+  // Handle player movement based on keys or touch
+  function handlePlayerMovement() {
+    let dx = 0, dy = 0;
+    if (keys['w'] || keys['arrowup'] || touchState.up) dy -= 1;
+    if (keys['s'] || keys['arrowdown'] || touchState.down) dy += 1;
+    if (keys['a'] || keys['arrowleft'] || touchState.left) dx -= 1;
+    if (keys['d'] || keys['arrowright'] || touchState.right) dx += 1;
+
+    // Normalize to prevent faster diagonal speed
+    if (dx !== 0 && dy !== 0) {
+      dx *= Math.SQRT1_2;
+      dy *= Math.SQRT1_2;
+    }
+
+    player.x += dx * player.speed;
+    player.y += dy * player.speed;
+
+    // Clamp inside canvas
+    player.x = Math.min(CANVAS_WIDTH - player.radius, Math.max(player.radius, player.x));
+    player.y = Math.min(CANVAS_HEIGHT - player.radius, Math.max(player.radius, player.y));
+  }
+
+  // Handle shooting logic
+  function handleShooting() {
+    let weapon = WEAPONS[currentWeaponIndex];
+    let now = performance.now();
+
+    // Reload logic could be added here (not implemented fully)
+    if (touchState.fire || keys[' ']) {
+      if (now - lastFireTime > weapon.fireRate && weapon.ammo > 0) {
+        lastFireTime = now;
+        fireWeapon();
+        weapon.ammo--;
+      }
+    }
+
+    // Simple reload on R key
+    if (keys['r']) {
+      reloadWeapon();
+    }
+  }
+
+  // Fire current weapon bullets
+  function fireWeapon() {
+    let weapon = WEAPONS[currentWeaponIndex];
+    // Fire bulletsPerShot bullets with spread around player's facing direction (top-down, so shoot upwards)
+    // We'll shoot bullets upward (y decreasing)
+    const baseAngle = -Math.PI / 2; // straight up
+    for (let i = 0; i < weapon.bulletsPerShot; i++) {
+      let spreadAngle = baseAngle;
+      if (weapon.spread > 0) {
+        let halfSpread = weapon.spread / 2;
+        spreadAngle += (Math.random() * weapon.spread - halfSpread) * (Math.PI / 180);
+      }
+      bullets.push({
+        x: player.x,
+        y: player.y,
+        vx: Math.cos(spreadAngle) * 10,
+        vy: Math.sin(spreadAngle) * 10,
+        damage: weapon.damage,
+        life: 60,
+      });
+    }
+  }
+
+  // Reload weapon (simple instant reload)
+  function reloadWeapon() {
+    let weapon = WEAPONS[currentWeaponIndex];
+    weapon.ammo = weapon.maxAmmo;
+    keys['r'] = false; // prevent repeat reload on holding
+  }
+
+  // Update bullets positions and check collisions
+  function updateBullets() {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      let b = bullets[i];
+      b.x += b.vx;
+      b.y += b.vy;
+      b.life--;
+
+      // Remove if out of bounds or life expired
+      if (b.x < 0 || b.x > CANVAS_WIDTH || b.y < 0 || b.y > CANVAS_HEIGHT || b.life <= 0) {
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      // Check collision with bots
+      for (let j = bots.length - 1; j >= 0; j--) {
+        let bot = bots[j];
+        let dx = b.x - bot.x;
+        let dy = b.y - bot.y;
+        let dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < bot.radius) {
+          bot.health -= b.damage;
+          bullets.splice(i, 1);
+          if (bot.health <= 0) {
+            rust += 2; // reward rust for kill
+            bots.splice(j, 1);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  // Update bots logic (simple chasing player)
+  function updateBots() {
+    for (let bot of bots) {
+      // Move toward player
+      let dx = player.x - bot.x;
+      let dy = player.y - bot.y;
+      let dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > 0) {
+        bot.x += (dx / dist) * bot.speed;
+        bot.y += (dy / dist) * bot.speed;
+      }
+
+      // Collision with player damages player
+      if (dist < bot.radius + player.radius) {
+        player.health -= 0.5; // damage per frame of contact
+        if (player.health < 0) player.health = 0;
+      }
+    }
+
+    // In sandbox mode allow spawning bots with S key
+    if (gameState === 'sandbox' && keys['s']) {
+      if (bots.length < 50) {
+        spawnBots(1);
+      }
+      keys['s'] = false; // prevent spam
+    }
+  }
+
+  // Check player health to detect death
+  function checkPlayerHealth() {
+    if (player.health <= 0) {
+      gameOver();
+    }
+  }
+
+  // Game over logic
+  function gameOver() {
+    alert('You died! Returning to main menu.');
+    openMainMenu();
+  }
+
+  // Render game to canvas
+  function render() {
+    ctx.clearRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Draw ASCII grid background
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    // Draw player (circle in circle) with skin colors
+    let skin = SKINS[player.skinIndex];
+    ctx.fillStyle = skin.outerColor || '#eee';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = skin.innerColor || '#555';
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.radius * 0.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Draw bots as ASCII chars
+    ctx.fillStyle = '#f44';
+    for (let bot of bots) {
+      // draw char centered at bot.x, bot.y using monospace font
+      ctx.fillStyle = '#f44';
+      if (bot.health < bot.maxHealth / 2) ctx.fillStyle = '#f88';
+      ctx.fillText(bot.char, bot.x, bot.y);
+    }
+
+    // Draw bullets as '*'
+    ctx.fillStyle = '#ff0';
+    for (let b of bullets) {
+      ctx.fillText(ASCII.bullet, b.x, b.y);
+    }
+
+    // Draw health bar
+    let healthPercent = player.health / PLAYER_HEALTH_MAX;
+    document.getElementById('healthFill').style.width = (healthPercent * 100) + '%';
+    if (healthPercent > 0.6) {
+      document.getElementById('healthFill').style.backgroundColor = '#4a4';
+    } else if (healthPercent > 0.3) {
+      document.getElementById('healthFill').style.backgroundColor = '#aa0';
+    } else {
+      document.getElementById('healthFill').style.backgroundColor = '#a33';
+    }
+
+    // Draw current weapon info
+    let weapon = WEAPONS[currentWeaponIndex];
+    let weaponText = `Weapon: ${weapon.name} Ammo: ${weapon.ammo}/${weapon.maxAmmo}`;
+    document.getElementById('weaponHUD').textContent = weaponText;
+
+    // Draw rust counter
+    document.getElementById('rustCounter').textContent = `Rust: ${rust}`;
+  }
+
+  // Cycle weapons with number keys 1-0
+  window.addEventListener('keydown', e => {
+    if (gameState === 'playing' || gameState === 'sandbox') {
+      let num = parseInt(e.key);
+      if (!isNaN(num)) {
+        let idx = (num === 0) ? 9 : num - 1;
+        if (idx >= 0 && idx < WEAPONS.length) {
+          currentWeaponIndex = idx;
+        }
+      }
+    }
+  });
+
+  // Open generic menu helper
+  function openMenu() {
+    if (gameState === 'playing' || gameState === 'sandbox') {
+      openMainMenu();
+    }
+  }
+
+  // Kickoff
+  window.onload = init;
+
+})();
+</script>
+
+</body>
+</html>
